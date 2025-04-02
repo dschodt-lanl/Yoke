@@ -30,7 +30,20 @@ from yoke.lr_schedulers import CosineWithWarmupScheduler
 from yoke.helpers.training_design import validate_patch_and_window
 
 
-class LodeRunner(nn.Module):
+class YokeModel(nn.Module):
+    """Base class for Yoke models.
+
+    This base class unifies Yoke models to provide a bare minimum set of
+    properties that downstream functionality can rely on being present.
+    """
+
+    def __init__(self) -> None:
+        """Initialize YokeModel class."""
+        super().__init__()
+        self._model_kwargs = {}
+
+
+class LodeRunner(YokeModel):
     """LodeRunner neural network.
 
     Parallel-patch embedding with SWIN U-Net backbone and
@@ -93,6 +106,18 @@ class LodeRunner(nn.Module):
         self.block_structure = block_structure
         self.window_sizes = window_sizes
         self.patch_merge_scales = patch_merge_scales
+        self._model_kwargs = {
+            "default_vars": default_vars,
+            "image_size": image_size,
+            "patch_size": patch_size,
+            "embed_dim": embed_dim,
+            "emb_factor": emb_factor,
+            "num_heads": num_heads,
+            "block_structure": block_structure,
+            "window_sizes": window_sizes,
+            "patch_merge_scales": patch_merge_scales,
+            "verbose": verbose,
+        }
 
         # Validate patch_size, window_sizes, and patch_merge_scales before proceeding.
         valid = validate_patch_and_window(
@@ -209,7 +234,7 @@ class Lightning_LodeRunner(LightningModule):
     ease of parallelization and encapsulation of training strategy.
 
     Args:
-        model (nn.Module): Pre-initialized nn.Module to wrap
+        model (YokeModel): Pre-initialized nn.Module to wrap
         in_vars (torch.Tensor): Input channels to train LodeRunner on
         out_vars (torch.Tensor): Output channels to train LodeRunner on
         lr_scheduler (_LRScheduler): Learning-rate scheduler to use with optimizer
@@ -222,7 +247,7 @@ class Lightning_LodeRunner(LightningModule):
 
     def __init__(
         self,
-        model: nn.Module,
+        model: YokeModel,
         in_vars: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
         out_vars: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
         lr_scheduler: _LRScheduler = None,
@@ -257,6 +282,11 @@ class Lightning_LodeRunner(LightningModule):
                 "frequency": 1,  # Step every batch (default for "step")
             },
         }
+
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        """Add custom keys to checkpoint."""
+        checkpoint["model_class"] = self.model.__class__.__name__
+        checkpoint["model_args"] = self.model._model_kwargs
 
     def forward(self, X: torch.Tensor, lead_times: torch.Tensor) -> torch.Tensor:
         """Forward method for Lightning wrapper."""
