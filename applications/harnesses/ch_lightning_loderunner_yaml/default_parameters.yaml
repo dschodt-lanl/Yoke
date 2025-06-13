@@ -1,0 +1,146 @@
+# Miscellaneous harness parameters.
+checkpoint: Null
+continuation: False
+freeze_backbone: False
+only_load_backbone: False
+
+
+# Lightning DataModule.
+datamodule:
+  _target_: yoke.datasets.lsc_dataset.LSCDataModule
+  ds_name: "LSC_rho2rho_sequential_DataSet"
+
+  ds_params_train:
+    LSC_NPZ_DIR: "C:\\Users\\400118\\Documents\\artimis\\data\\lsc240420_fp16_half\\lsc240420_fp16_half"
+    file_prefix_list: "C:\\Users\\400118\\Documents\\artimis\\Yoke\\applications\\filelists\\lsc240420_prefixes_train_80pct.txt"
+    seq_len: 2
+    timeIDX_offset: [1]
+    half_image: True
+    transform:
+      _target_: yoke.datasets.transforms.ResizePadCrop
+      interp_kwargs:
+        scale_factor: 1.0
+      scaled_image_size: [560, 240]
+      pad_position: ["bottom", "right"]
+
+  ds_params_val:
+    LSC_NPZ_DIR: "C:\\Users\\400118\\Documents\\artimis\\data\\lsc240420_fp16_half\\lsc240420_fp16_half"
+    file_prefix_list: "C:\\Users\\400118\\Documents\\artimis\\Yoke\\applications\\filelists\\lsc240420_prefixes_validation_10pct.txt"
+    seq_len: 2
+    timeIDX_offset: [1]
+    half_image: True
+    transform:
+      _target_: yoke.datasets.transforms.ResizePadCrop
+      interp_kwargs:
+        scale_factor: 1.0
+      scaled_image_size: [560, 240]
+      pad_position: ["bottom", "right"]
+
+  dl_params_train:
+    batch_size: 128
+    num_workers: 8
+    prefetch_factor: 2
+
+  dl_params_val:
+    batch_size: 128
+    num_workers: 8
+    prefetch_factor: 2
+
+
+# PyTorch Lightning LightningModule
+lightning_module:
+  _target_: yoke.models.vit.swin.bomberman.Lightning_LodeRunner
+
+  model:
+    _target_: yoke.models.vit.swin.bomberman.LodeRunner
+    default_vars: [
+              "density_case",
+              "density_cushion",
+              "density_maincharge",
+              "density_outside_air",
+              "density_striker",
+              "density_throw",
+              "Uvelocity",
+              "Wvelocity",
+          ]
+    image_size: [560, 240]
+    patch_size: [5, 5]
+    embed_dim: 96
+    emb_factor: 2
+    num_heads: 8
+    block_structure: [1, 1, 3, 1]
+    window_sizes: [[2, 2], [2, 2], [2, 2], [2, 2]]
+    patch_merge_scales: [[2, 2], [2, 2], [2, 2]]
+
+  in_vars:
+    _target_: torch.tensor
+    data: [0, 1, 2, 3, 4, 5, 6, 7]
+
+  out_vars:
+    _target_: torch.tensor
+    data: [0, 1, 2, 3, 4, 5, 6, 7]
+
+  loss_fn:
+    _target_: yoke.losses.masked_loss.CroppedLoss2D
+    loss_fxn:
+      _target_: torch.nn.MSELoss
+      reduction: "None"
+    crop: [0, 0, 560, 200]
+
+  lr_scheduler:
+    _target_: yoke.lr_schedulers.CosineWithWarmupScheduler
+    _partial_: True  # scheduler needs optimizer as input so don't fully instantiate
+
+  scheduler_params:
+    anchor_lr: 1.0e-4
+    warmup_steps: 640
+    terminal_steps: 25600
+    num_cycles: 0.5
+    min_fraction: 0.1
+
+  scheduled_sampling_scheduler:
+    _target_: yoke.scheduled_sampling.exponential
+    initial_schedule_prob: 1.0
+    decay_param: 0.0
+    minimum_schedule_prob: 1.0
+
+
+# PyTorch Lightning Trainer
+trainer:
+  _target_: lightning.pytorch.Trainer
+  max_epochs: 200
+  limit_train_batches: 128
+  limit_val_batches: 128
+  check_val_every_n_epoch: 5
+  # accelerator: "gpu"
+  # devices: 4
+  # num_nodes: 1
+  # strategy: "ddp"
+  enable_progress_bar: True
+  log_every_n_steps: 128
+
+  logger:
+    _target_: lightning.pytorch.loggers.TensorBoardLogger
+    save_dir: "./"
+
+  callbacks:
+    - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+      save_top_k: 5
+      every_n_epochs: 5
+      monitor: "val_loss"
+      mode: "min"
+      dirpath: "./checkpoints"
+      filename: f"study{1:03d}" + "_{epoch:04d}_{val_loss:.4f}"
+      save_last: True
+    - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+      logging_interval: "step"
+
+test:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  save_top_k: 5
+  every_n_epochs: 5
+  monitor: "val_loss"
+  mode: "min"
+  dirpath: "./checkpoints"
+  filename: f"study{1:03d}" + "_{epoch:04d}_{val_loss:.4f}"
+  save_last: True
