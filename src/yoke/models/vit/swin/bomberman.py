@@ -218,6 +218,10 @@ class Lightning_LodeRunner(LightningModule):
         scheduled_sampling_scheduler (Callable): Function that accepts the current
             training step and returns a number in [0, 1] for scheduled sampling
             probability.
+        use_pushforward (bool): Flag indicating loss should only be computed on final
+            frame of the predicted sequence.  I.e., if we use rollout prediction to
+            predict t -> t+1, t+2, t+3, only prediction t+3 will be used in the loss
+            computation.
     """
 
     def __init__(
@@ -229,6 +233,7 @@ class Lightning_LodeRunner(LightningModule):
         scheduler_params: dict = None,
         loss_fn: Callable = nn.MSELoss(reduction="none"),
         scheduled_sampling_scheduler: Callable = lambda global_step: 1.0,
+        use_pushforward: bool = False,
     ) -> None:
         """Initialization for Lightning wrapper."""
         super().__init__()
@@ -237,6 +242,7 @@ class Lightning_LodeRunner(LightningModule):
         self.scheduler_params = scheduler_params or {}
         self.scheduled_sampling_scheduler = scheduled_sampling_scheduler
         self.loss_fn = loss_fn
+        self.use_pushforward = use_pushforward
 
         # Register buffers to ensure auto-transfer to devices as needed.
         self.register_buffer("in_vars", in_vars)
@@ -269,32 +275,54 @@ class Lightning_LodeRunner(LightningModule):
         """Execute training step."""
         # Compute forward pass, accounting for special training schemes like
         # scheduled sampling.
-        img_seq, lead_times = batch  # Unpack batch
-        pred_seq = []
+        img_seq, lead_times = batch
         scheduled_prob = self.scheduled_sampling_scheduler(self.current_epoch)
-        for k, k_img in enumerate(torch.unbind(img_seq[:, :-1], dim=1)):
-            if k == 0:
-                # Forward pass for the initial step
-                pred_img = self(k_img, lead_times)
-            else:
-                # Apply scheduled sampling
-                if random.random() < scheduled_prob:
-                    current_input = k_img
+        if self.use_pushforward:
+            # Since we're only penalizing the final prediction, we don't need to
+            # store the full rollout sequence.
+            # WARNING: Using scheduled sampling with the pushforward loss can
+            # lead to wasted computations (i.e., once a ground-truth input is provided
+            # in the sequence, gradients of previous predictions won't be computed).
+            for k, k_img in enumerate(torch.unbind(img_seq[:, :-1], dim=1)):
+                if k == 0:
+                    # Forward pass for the initial step
+                    pred_img = self(k_img, lead_times)
                 else:
-                    current_input = pred_img
-                pred_img = self(current_input, lead_times)
+                    # Apply scheduled sampling
+                    if random.random() < scheduled_prob:
+                        current_input = k_img
+                    else:
+                        current_input = pred_img
+                    pred_img = self(current_input, lead_times)
 
-            # Store the prediction
-            pred_seq.append(pred_img)
+            # Compute loss.
+            loss = self.loss_fn(pred_img, img_seq[:, -1])
+        else:
+            pred_seq = []
+            scheduled_prob = self.scheduled_sampling_scheduler(self.current_epoch)
+            for k, k_img in enumerate(torch.unbind(img_seq[:, :-1], dim=1)):
+                if k == 0:
+                    # Forward pass for the initial step
+                    pred_img = self(k_img, lead_times)
+                else:
+                    # Apply scheduled sampling
+                    if random.random() < scheduled_prob:
+                        current_input = k_img
+                    else:
+                        current_input = pred_img
+                    pred_img = self(current_input, lead_times)
 
-        # Combine predictions into a tensor of shape [B, SeqLength, C, H, W]
-        pred_seq = torch.stack(pred_seq, dim=1)
+                # Store the prediction
+                pred_seq.append(pred_img)
 
-        # Per-sample loss
-        losses = self.loss_fn(pred_seq, img_seq[:, 1:])
-        # self.log("train_loss_per_sample", losses, on_epoch=True, on_step=True)
+            # Combine predictions into a tensor of shape [B, SeqLength, C, H, W]
+            pred_seq = torch.stack(pred_seq, dim=1)
 
-        batch_loss = losses.mean()
+            # Compute loss.
+            loss = self.loss_fn(pred_seq, img_seq[:, 1:])
+
+        # Log to training logger.
+        batch_loss = loss.mean()
         if hasattr(self, "trainer") and self.trainer.training:
             self.log("train_loss", batch_loss, sync_dist=True)
             self.log("scheduled_prob", scheduled_prob, sync_dist=True)
@@ -395,7 +423,9 @@ if __name__ == "__main__":
     loderunner_out = lode_runner(x, x_vars, out_vars, lead_times)
     print("LodeRunner-tiny output shape:", loderunner_out.shape)
     print("LodeRunner-tiny output has NaNs:", torch.isnan(loderunner_out).any())
-    print("LodeRunner-tiny parameters:", count_torch_params(lode_runner, trainable=True))
+    print(
+        "LodeRunner-tiny parameters:", count_torch_params(lode_runner, trainable=True)
+    )
 
     # Test lightning wrapper initialization.
     L_loderunner = Lightning_LodeRunner(
@@ -489,7 +519,9 @@ if __name__ == "__main__":
         patch_merge_scales=patch_merge_scales,
         verbose=False,
     ).to(device)
-    print("LodeRunner-huge parameters:", count_torch_params(lode_runner, trainable=True))
+    print(
+        "LodeRunner-huge parameters:", count_torch_params(lode_runner, trainable=True)
+    )
 
     # Giant size
     embed_dim = 512
