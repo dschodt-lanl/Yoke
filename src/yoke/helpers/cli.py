@@ -192,6 +192,13 @@ def add_model_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Number of features scalar inputs are mapped into prior to T-convs.",
     )
     parser.add_argument(
+        "--model",
+        action="store",
+        type=str,
+        default="cnn",
+        help="Model type: (cnn, vit)",
+    )
+    parser.add_argument(
         "--block_structure",
         action="store",
         type=int,
@@ -228,6 +235,13 @@ def add_training_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
         type=int,
         default=3,
         help="Length of predicted sequence.",
+    )
+    parser.add_argument(
+        "--use_pushforward",
+        action="store",
+        type=int,
+        default=1,
+        help="Flag indicating whether or not to use pushforward loss. Using 0==False, 1==True due to argparse quirks.",
     )
     parser.add_argument(
         "--timeIDX_offset",
@@ -353,6 +367,34 @@ def add_training_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
         nargs="+",
         default=(1120, 400),
         help="Rescaled image will be padded or cropped to this size.",
+    )
+    parser.add_argument(
+        "--precision",
+        action="store",
+        type=str,
+        default="32-true",
+        help="Training precision passed to Lightning Trainer.",
+    )
+    parser.add_argument(
+        "--loss",
+        action="store",
+        type=str,
+        default="MSELoss",
+        help="Name of loss in torch.nn to use for training.",
+    )
+    parser.add_argument(
+        "--n_channels_train",
+        action="store",
+        type=int,
+        default=8,
+        help="Number of channels for model to be trained on.",
+    )
+    parser.add_argument(
+        "--n_channels_val",
+        action="store",
+        type=int,
+        default=8,
+        help="Number of channels for model to be validated on.",
     )
     return parser
 
