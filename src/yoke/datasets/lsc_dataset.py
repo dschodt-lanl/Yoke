@@ -870,7 +870,7 @@ class LSC_rho2rho_sequential_DataSet(Dataset):
     def __init__(
         self,
         LSC_NPZ_DIR: str,
-        file_prefix_list: str,
+        file_prefix_list: Union[list[str], str],
         seq_len: int = 2,
         timeIDX_offset: Union[int, list[int], tuple[int]] = 1,
         half_image: bool = True,
@@ -905,8 +905,11 @@ class LSC_rho2rho_sequential_DataSet(Dataset):
         self.path_to_cache = path_to_cache
         if (self.path_to_cache is None) or not os.path.exists(self.path_to_cache):
             # Load the list of file prefixes
-            with open(file_prefix_list) as f:
-                self.file_prefix_list = [line.rstrip() for line in f]
+            if isinstance(file_prefix_list, str):
+                with open(file_prefix_list) as f:
+                    self.file_prefix_list = [line.rstrip() for line in f]
+            else:
+                self.file_prefix_list = file_prefix_list
 
             # Shuffle the prefixes for randomness
             self.rng.shuffle(self.file_prefix_list)
