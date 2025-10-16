@@ -16,6 +16,7 @@ import torch
 from torch import nn
 from torch.optim.lr_scheduler import _LRScheduler
 from lightning.pytorch import LightningModule
+import torchvision
 
 from yoke.models.vit.swin.unet import SwinUnetBackbone
 from yoke.models.vit.patch_embed import ParallelVarPatchEmbed
@@ -227,8 +228,10 @@ class Lightning_LodeRunner(LightningModule):
     def __init__(
         self,
         model: nn.Module,
-        in_vars: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
-        out_vars: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
+        in_vars_train: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
+        out_vars_train: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
+        in_vars_val: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
+        out_vars_val: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
         lr_scheduler: _LRScheduler = None,
         scheduler_params: dict = None,
         loss_fn: Callable = nn.MSELoss(reduction="none"),
@@ -243,10 +246,15 @@ class Lightning_LodeRunner(LightningModule):
         self.scheduled_sampling_scheduler = scheduled_sampling_scheduler
         self.loss_fn = loss_fn
         self.use_pushforward = use_pushforward
+        self.automatic_optimization = (
+            not use_pushforward
+        )  # custom training logic used when use_pushforward is True
 
         # Register buffers to ensure auto-transfer to devices as needed.
-        self.register_buffer("in_vars", in_vars)
-        self.register_buffer("out_vars", out_vars)
+        self.register_buffer("in_vars_train", in_vars_train)
+        self.register_buffer("out_vars_train", out_vars_train)
+        self.register_buffer("in_vars_val", in_vars_val)
+        self.register_buffer("out_vars_val", out_vars_val)
 
     def configure_optimizers(self) -> torch.optim.Optimizer:
         """Setup optimizer with scheduler."""
@@ -264,12 +272,16 @@ class Lightning_LodeRunner(LightningModule):
             },
         }
 
-    def forward(self, X: torch.Tensor, lead_times: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        X: torch.Tensor,
+        lead_times: torch.Tensor,
+        in_vars: torch.Tensor,
+        out_vars: torch.Tensor,
+    ) -> torch.Tensor:
         """Forward method for Lightning wrapper."""
         # Forward pass through the custom model
-        return self.model(
-            X, lead_times=lead_times, in_vars=self.in_vars, out_vars=self.out_vars
-        )
+        return self.model(X, lead_times=lead_times, in_vars=in_vars, out_vars=out_vars)
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         """Execute training step."""
@@ -277,80 +289,112 @@ class Lightning_LodeRunner(LightningModule):
         # scheduled sampling.
         img_seq, lead_times = batch
         scheduled_prob = self.scheduled_sampling_scheduler(self.current_epoch)
-        if self.use_pushforward:
-            # Since we're only penalizing the final prediction, we don't need to
-            # store the full rollout sequence.
-            # WARNING: Using scheduled sampling with the pushforward loss can
-            # lead to wasted computations (i.e., once a ground-truth input is provided
-            # in the sequence, gradients of previous predictions won't be computed).
-            for k, k_img in enumerate(torch.unbind(img_seq[:, :-1], dim=1)):
-                if k == 0:
-                    # Forward pass for the initial step
-                    pred_img = self(k_img, lead_times)
+        scheduled_prob = self.scheduled_sampling_scheduler(self.current_epoch)
+        opt = self.optimizers()
+        scheduler = self.lr_schedulers()
+        loss_all = []
+        for k, k_img in enumerate(torch.unbind(img_seq[:, :-1], dim=1)):
+            opt.zero_grad()
+
+            if k == 0:
+                # Forward pass for the initial step
+                pred_img = self(
+                    k_img,
+                    lead_times,
+                    in_vars=self.in_vars_train,
+                    out_vars=self.out_vars_train,
+                )
+            else:
+                # Apply scheduled sampling
+                if random.random() < scheduled_prob:
+                    current_input = k_img
                 else:
-                    # Apply scheduled sampling
-                    if random.random() < scheduled_prob:
-                        current_input = k_img
-                    else:
-                        current_input = pred_img
-                    pred_img = self(current_input, lead_times)
+                    current_input = pred_img
 
-            # Compute loss.
-            loss = self.loss_fn(pred_img, img_seq[:, -1])
-        else:
-            pred_seq = []
-            scheduled_prob = self.scheduled_sampling_scheduler(self.current_epoch)
-            for k, k_img in enumerate(torch.unbind(img_seq[:, :-1], dim=1)):
-                if k == 0:
-                    # Forward pass for the initial step
-                    pred_img = self(k_img, lead_times)
-                else:
-                    # Apply scheduled sampling
-                    if random.random() < scheduled_prob:
-                        current_input = k_img
-                    else:
-                        current_input = pred_img
-                    pred_img = self(current_input, lead_times)
+                # Use pushforward trick (gradients aren't propagated through rollout).
+                # https://openreview.net/forum?id=vSix3HPYKSU
+                if self.use_pushforward:
+                    current_input = current_input.detach()
 
-                # Store the prediction
-                pred_seq.append(pred_img)
+                # Compute the single step forward pass.
+                pred_img = self(
+                    current_input,
+                    lead_times=lead_times,
+                    in_vars=self.in_vars_train,
+                    out_vars=self.out_vars_train,
+                )
 
-            # Combine predictions into a tensor of shape [B, SeqLength, C, H, W]
-            pred_seq = torch.stack(pred_seq, dim=1)
+            # Compute loss and step optimizer.
+            loss = self.loss_fn(pred_img, img_seq[:, k + 1]).mean()
+            self.manual_backward(loss)
+            opt.step()
 
-            # Compute loss.
-            loss = self.loss_fn(pred_seq, img_seq[:, 1:])
+            # Store the prediction
+            loss_all.append(loss.item())
+
+        # Step the learning rate scheduler.
+        scheduler.step()
 
         # Log to training logger.
-        batch_loss = loss.mean()
+        batch_loss = np.mean(loss_all)
         if hasattr(self, "trainer") and self.trainer.training:
-            self.log("train_loss", batch_loss, sync_dist=True)
+            self.log("train_loss", batch_loss, sync_dist=True, prog_bar=True)
             self.log("scheduled_prob", scheduled_prob, sync_dist=True)
 
-        return batch_loss
+        if self.automatic_optimization:
+            return batch_loss
 
     def validation_step(self, batch: torch.Tensor, batch_idx: int) -> None:
         """Execute validation step."""
         # Compute forward pass.
         img_seq, lead_times = batch  # Unpack batch
-        pred_seq = []
+        loss_nts = []
+        loss_rollout = []
+        pred_img_rollout = img_seq[:, 0]
         for k, k_img in enumerate(torch.unbind(img_seq[:, :-1], dim=1)):
-            # For now, stick to next time step prediction for validation step.
-            pred_img = self(k_img, lead_times)
+            # Next time step prediction: t -> t+1
+            pred_img = self(
+                k_img,
+                lead_times=lead_times,
+                in_vars=self.in_vars_val,
+                out_vars=self.out_vars_val,
+            )
+            loss_nts.append(self.loss_fn(pred_img, img_seq[:, k + 1]).mean().item())
 
-            # Store the prediction
-            pred_seq.append(pred_img)
+            # Autoregressive rollout:
+            pred_img_rollout = self(
+                pred_img_rollout,
+                lead_times=lead_times,
+                in_vars=self.in_vars_val,
+                out_vars=self.out_vars_val,
+            )
+            loss_rollout.append(
+                self.loss_fn(pred_img_rollout, img_seq[:, k + 1]).mean().item()
+            )
 
-        # Combine predictions into a tensor of shape [B, SeqLength, C, H, W]
-        pred_seq = torch.stack(pred_seq, dim=1)
-
-        # Per-sample loss
-        losses = self.loss_fn(pred_seq, img_seq[:, 1:])
-        # self.log("val_loss_per_sample", losses, on_epoch=True, on_step=True)
-
-        batch_loss = losses.mean()
+        # Log losses.
+        loss_nts = np.mean(loss_nts)
+        loss_rollout_final = loss_rollout[-1]
+        loss_rollout = np.mean(loss_rollout)
         if hasattr(self, "trainer") and self.trainer.validating:
-            self.log("val_loss", batch_loss, sync_dist=True)
+            self.log(
+                "val_loss",
+                loss_nts,
+                sync_dist=True,
+                prog_bar=True,
+            )
+            self.log(
+                "val_loss_rollout",
+                loss_rollout,
+                sync_dist=True,
+                prog_bar=True,
+            )
+            self.log(
+                "val_loss_rollout_final",
+                loss_rollout_final,
+                sync_dist=True,
+                prog_bar=True,
+            )
 
 
 if __name__ == "__main__":
@@ -423,9 +467,7 @@ if __name__ == "__main__":
     loderunner_out = lode_runner(x, x_vars, out_vars, lead_times)
     print("LodeRunner-tiny output shape:", loderunner_out.shape)
     print("LodeRunner-tiny output has NaNs:", torch.isnan(loderunner_out).any())
-    print(
-        "LodeRunner-tiny parameters:", count_torch_params(lode_runner, trainable=True)
-    )
+    print("LodeRunner-tiny parameters:", count_torch_params(lode_runner, trainable=True))
 
     # Test lightning wrapper initialization.
     L_loderunner = Lightning_LodeRunner(
@@ -519,9 +561,7 @@ if __name__ == "__main__":
         patch_merge_scales=patch_merge_scales,
         verbose=False,
     ).to(device)
-    print(
-        "LodeRunner-huge parameters:", count_torch_params(lode_runner, trainable=True)
-    )
+    print("LodeRunner-huge parameters:", count_torch_params(lode_runner, trainable=True))
 
     # Giant size
     embed_dim = 512
