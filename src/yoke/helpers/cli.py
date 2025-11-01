@@ -140,6 +140,42 @@ def add_filepath_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
         default="lsc240420_test_sample.txt",
         help="Path to list of files to test on.",
     )
+    parser.add_argument(
+        "--cache_dir",
+        action="store",
+        type=str,
+        default=None,
+        help="Path to .h5 caches for lsc sequential dataset.",
+    )
+    parser.add_argument(
+        "--cache_file_train",
+        action="store",
+        type=str,
+        default=None,
+        help="h5 cache file for lsc sequential training dataset.",
+    )
+    parser.add_argument(
+        "--cache_file_val",
+        action="store",
+        type=str,
+        default=None,
+        help="h5 cache file for lsc sequential validation dataset.",
+    )
+    parser.add_argument(
+        "--channel_data_dir",
+        action="store",
+        type=str,
+        default=None,
+        help="Path to files containing channel names and normalizations.",
+    )
+    parser.add_argument(
+        "--channel_file",
+        action="store",
+        type=str,
+        default=None,
+        help="File defining channels and normalizations.",
+    )
+
     return parser
 
 
@@ -317,8 +353,10 @@ def add_training_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
     )
     parser.add_argument(
         "--only_load_backbone",
-        action="store_true",
-        help="Only attempt to load model backbone from checkpoint.",
+        action="store",
+        type=int,
+        default=0,
+        help="Only attempt to load model backbone from checkpoint. Using 0==False, 1==True due to argparse quirks.",
     )
     parser.add_argument(
         "--freeze_backbone",
@@ -376,6 +414,13 @@ def add_training_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
         help="Training precision passed to Lightning Trainer.",
     )
     parser.add_argument(
+        "--dtype",
+        action="store",
+        type=str,
+        default="float32",
+        help="Torch datatype for loaded data.",
+    )
+    parser.add_argument(
         "--loss",
         action="store",
         type=str,
@@ -396,6 +441,14 @@ def add_training_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
         default=8,
         help="Number of channels for model to be validated on.",
     )
+    parser.add_argument(
+        "--eval_on_same_channels",
+        action="store",
+        type=int,
+        default=1,
+        help="Evaluate on same channels as used to train. Using 0==False, 1==True due to argparse quirks.",
+    )
+
     return parser
 
 

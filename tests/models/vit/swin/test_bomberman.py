@@ -54,7 +54,7 @@ def lightning_model(loderunner_model: LodeRunner) -> Lightning_LodeRunner:
         out_vars=torch.tensor([0, 1, 2]),
         lr_scheduler=MockScheduler,
         scheduler_params={"dummy_param": 1},
-        loss_fn=nn.MSELoss(reduction="none"),
+        loss_train=nn.MSELoss(reduction="none"),
         scheduled_sampling_scheduler=lambda global_step: 1.0,
     )
 

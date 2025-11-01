@@ -6,7 +6,7 @@ from typing import Any, Optional
 import torch
 import torch.nn.functional as F
 
-from yoke.models.cnn.unet import UNet
+from yoke.models.cnn.unet import DoubleConv, Down, UNet
 from yoke.models.cnn.embeddings import ParallelVarEmbed, TimeEmbed
 
 
@@ -83,6 +83,7 @@ class LodeRunnerCNN(torch.nn.Module):
         self,
         default_vars: list[str],
         image_size: Iterable[int, int] = (1120, 800),
+        n_downsample: int = 0,
         embed_dim: int = 128,
         *args: tuple[Any, ...],
         **kwargs: dict[str, Any],
@@ -103,11 +104,34 @@ class LodeRunnerCNN(torch.nn.Module):
             norm_layer=None,
         )
 
+        # Define a spatial downsampling block.
+        if n_downsample > 0:
+            self.downsample = torch.nn.Sequential(
+                *[
+                    Down(in_channels=self.embed_dim, out_channels=self.embed_dim)
+                    for _ in range(n_downsample)
+                ]
+            )
+        else:
+            self.downsample = None
+
         # Define learnable time encoding.
         self.temporal_encoding = TimeEmbed(self.embed_dim)
 
         # Define network backbone.
         self.unet = UNet(in_channels=self.embed_dim, out_channels=self.embed_dim)
+
+        # Define the upsampling block to restore original spatial extent.
+        if n_downsample > 0:
+            up_block = torch.nn.Sequential(
+                torch.nn.ConvTranspose2d(
+                    self.embed_dim, self.embed_dim, kernel_size=2, stride=2
+                ),
+                DoubleConv(self.embed_dim, self.embed_dim),
+            )
+            self.upsample = torch.nn.Sequential(*[up_block for _ in range(n_downsample)])
+        else:
+            self.upsample = None
 
         # Define the decoder.
         self.decoder = ChannelDecoder(embed_dim=self.embed_dim, max_vars=self.max_vars)
@@ -126,10 +150,18 @@ class LodeRunnerCNN(torch.nn.Module):
         # Encode temporal information.
         x = self.temporal_encoding(x, lead_times)
 
+        # Downsample spatially.
+        if self.downsample is not None:
+            x = self.downsample(x)
+
         # Pass through backbone.
         x = self.unet(x)
 
-        # Decode only entries corresponding to out_vars for loss
+        # Upsample to original spatial extent.
+        if self.upsample is not None:
+            x = self.upsample(x)
+
+        # Decode only entries corresponding to out_vars.
         x = self.decoder(x, out_vars=out_vars)
 
         return x

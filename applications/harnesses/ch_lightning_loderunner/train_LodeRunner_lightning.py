@@ -22,6 +22,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 import torch
 import torch.nn as nn
+import torchvision.transforms.v2 as tforms
 import numpy as np
 
 from yoke.models.vit.swin.bomberman import LodeRunner, Lightning_LodeRunner
@@ -33,6 +34,7 @@ from yoke.helpers import cli
 import yoke.scheduled_sampling
 from yoke.losses.masked_loss import CroppedLoss2D
 
+from yoke.models.cnn.cnn import LodeRunnerCNN
 
 #############################################
 # Inputs
@@ -63,8 +65,8 @@ parser.set_defaults(
 #############################################
 #############################################
 if __name__ == "__main__":
-    # Set precision for tensor core speedup potential.
-    torch.set_float32_matmul_precision("medium")
+    # # Set precision for tensor core speedup potential.
+    # torch.set_float32_matmul_precision("medium")
 
     #############################################
     # Process Inputs
@@ -97,17 +99,19 @@ if __name__ == "__main__":
     image_size = (
         args.image_size if args.scaled_image_size is None else args.scaled_image_size
     )
-    model = LodeRunner(
-        default_vars=[
-            "density_case",
-            "density_cushion",
-            "density_maincharge",
-            "density_outside_air",
-            "density_striker",
-            "density_throw",
-            "Uvelocity",
-            "Wvelocity",
-        ],
+    # hydro_fields = ["av_density"]
+    hydro_fields = [
+        "density_case",
+        "density_cushion",
+        "density_maincharge",
+        "density_outside_air",
+        "density_striker",
+        "density_throw",
+        "Uvelocity",
+        "Wvelocity",
+    ]
+    model = LodeRunnerCNN(
+        default_vars=hydro_fields,
         image_size=image_size,
         patch_size=(5, 5),
         embed_dim=args.embed_dim,
@@ -121,27 +125,56 @@ if __name__ == "__main__":
     #############################################
     # Initialize Data
     #############################################
-    transform = ResizePadCrop(
-        interp_kwargs={"scale_factor": args.scale_factor},
-        scaled_image_size=args.scaled_image_size,
-        pad_position=("bottom", "right"),
+    # transform = ResizePadCrop(
+    #     interp_kwargs={"scale_factor": args.scale_factor},
+    #     scaled_image_size=args.scaled_image_size,
+    #     pad_position=("bottom", "right"),
+    # )
+    transform = torch.nn.Sequential(
+        ResizePadCrop(
+            interp_kwargs={"scale_factor": args.scale_factor},
+            scaled_image_size=args.scaled_image_size,
+            pad_position=("bottom", "right"),
+        ),
+        # tforms.Normalize(
+        #     mean=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        #     std=[1.8316, 0.0984, 0.4502, 0.0020, 0.2398, 0.8321, 0.0291, 0.0535],
+        # ),
+        tforms.Normalize(
+            mean=[0.4522, 0.0079, 0.1662, 0.0011, 0.0216, 0.0805, 0.0077, 0.0034],
+            std=[1.8316, 0.0984, 0.4502, 0.0020, 0.2398, 0.8321, 0.0291, 0.0535],
+        ),
+        # tforms.Normalize(
+        #     mean=[0.7264],
+        #     std=[1.9946],
+        # ),
     )
     ds_params = {
         "LSC_NPZ_DIR": args.LSC_NPZ_DIR,
         "seq_len": args.seq_len,
-        "timeIDX_offset": args.timeIDX_offset,
+        "timeIDX_offset": [1],
         "half_image": True,
         "transform": transform,
+        "hydro_fields": hydro_fields,
     }
     dl_params = {
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "prefetch_factor": args.prefetch_factor,
+        "pin_memory": True,
     }
     lsc_datamodule = LSCDataModule(
         ds_name="LSC_rho2rho_sequential_DataSet",
-        ds_params_train=ds_params | {"file_prefix_list": train_filelist},
-        ds_params_val=ds_params | {"file_prefix_list": validation_filelist},
+        ds_params_train=ds_params
+        | {
+            "file_prefix_list": train_filelist,
+            "path_to_cache": f"/usr/projects/artimis/mpmm/dschodt/caches/lsc_train_seq{args.seq_len}_dt1p_fp16_half.h5",
+        },
+        ds_params_val=ds_params
+        | {
+            "file_prefix_list": validation_filelist,
+            "path_to_cache": f"/usr/projects/artimis/mpmm/dschodt/caches/lsc_validation_seq{args.seq_len}_dt1p_fp16_half.h5",
+        },
         dl_params_train=dl_params | {"shuffle": True, "persistent_workers": True},
         dl_params_val=dl_params | {"shuffle": False, "persistent_workers": True},
     )
@@ -154,7 +187,8 @@ if __name__ == "__main__":
     scaled_image_size = np.array(args.scaled_image_size)
     valid_im_size = np.floor(args.scale_factor * np.array(args.image_size)).astype(int)
     loss = CroppedLoss2D(
-        loss_fxn=nn.MSELoss(reduction="none"),
+        # loss_fxn=nn.MSELoss(reduction="none"),
+        loss_fxn=nn.L1Loss(reduction="none"),
         crop=(
             0,
             0,
@@ -166,8 +200,8 @@ if __name__ == "__main__":
     # Prepare the Lightning module.
     lm_kwargs = {
         "model": model,
-        "in_vars": torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
-        "out_vars": torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
+        "in_vars": torch.arange(len(hydro_fields)),
+        "out_vars": torch.arange(len(hydro_fields)),
         "loss_fn": loss,
         "lr_scheduler": CosineWithWarmupScheduler,
         "scheduler_params": {
@@ -182,8 +216,14 @@ if __name__ == "__main__":
             decay_param=args.decay_param,
             minimum_schedule_prob=args.minimum_schedule_prob,
         ),
+        "use_pushforward": bool(args.use_pushforward),
     }
-    if args.continuation or (args.checkpoint is None) or args.only_load_backbone:
+    if (
+        args.continuation
+        or (args.checkpoint is None)
+        or (args.checkpoint == "")
+        or args.only_load_backbone
+    ):
         L_loderunner = Lightning_LodeRunner(**lm_kwargs)
     else:
         # This condition is used to load pretrained weights without continuing training.
@@ -243,9 +283,13 @@ if __name__ == "__main__":
         devices=args.Ngpus,  # Number of GPUs per node
         num_nodes=args.Knodes,
         strategy="ddp",
+        # precision="bf16-mixed",
         enable_progress_bar=True,
         logger=logger,
-        log_every_n_steps=min(1024, args.train_batches, args.val_batches),  # arbitrary choice of 1024 minimum
+        log_every_n_steps=min(
+            1024,
+            args.train_batches,
+        ),  # arbitrary choice of 1024 minimum
         callbacks=[checkpoint_callback, lr_monitor],
     )
 

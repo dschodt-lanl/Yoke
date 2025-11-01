@@ -862,6 +862,7 @@ class LSC_rho2rho_sequential_DataSet(Dataset):
             return all possible time offsets (including 0 and negative offsets).
         half_image (bool): If True, returns half-images, otherwise full images.
         hydro_fields (np.array): Array of hydro field names to be included.
+        dtype (torch datatype): Datatype to cast loaded data to.
         transform (Callable): Transform applied to loaded data sequence before returning.
         path_to_cache (str): Path to a .npz cache file defining valid sequences.  If
             the file doesn't exist, the generated sequence list will be stored here.
@@ -886,6 +887,7 @@ class LSC_rho2rho_sequential_DataSet(Dataset):
                 "Wvelocity",
             ]
         ),
+        dtype: torch.FloatType = torch.float32,
         transform: Callable = None,
         path_to_cache: str = None,
     ) -> None:
@@ -898,6 +900,7 @@ class LSC_rho2rho_sequential_DataSet(Dataset):
         self.LSC_NPZ_DIR = LSC_NPZ_DIR
         self.seq_len = seq_len
         self.half_image = half_image
+        self.dtype = dtype
         self.transform = transform
         self.rng = np.random.default_rng()
 
@@ -1054,9 +1057,7 @@ class LSC_rho2rho_sequential_DataSet(Dataset):
             data_npz.close()
 
             # Stack the fields for this frame
-            field_tensor = torch.tensor(
-                np.stack(field_imgs, axis=0), dtype=torch.float32
-            )
+            field_tensor = torch.tensor(np.stack(field_imgs, axis=0), dtype=self.dtype)
             frames.append(field_tensor)
 
         # Combine frames into a single tensor of shape [seq_len, num_fields, H, W]
@@ -1067,7 +1068,7 @@ class LSC_rho2rho_sequential_DataSet(Dataset):
             img_seq = self.transform(img_seq)
 
         # Fixed time offset
-        Dt = torch.tensor(0.25 * timeIDX_offset, dtype=torch.float32)
+        Dt = torch.tensor(0.25 * timeIDX_offset, dtype=self.dtype)
 
         return img_seq, Dt
 

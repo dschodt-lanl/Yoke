@@ -234,7 +234,8 @@ class Lightning_LodeRunner(LightningModule):
         out_vars_val: torch.Tensor = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7]),
         lr_scheduler: _LRScheduler = None,
         scheduler_params: dict = None,
-        loss_fn: Callable = nn.MSELoss(reduction="none"),
+        loss_train: Callable = nn.MSELoss(reduction="none"),
+        loss_val: Callable = nn.MSELoss(reduction="none"),
         scheduled_sampling_scheduler: Callable = lambda global_step: 1.0,
         use_pushforward: bool = False,
     ) -> None:
@@ -244,7 +245,8 @@ class Lightning_LodeRunner(LightningModule):
         self.lr_scheduler = lr_scheduler or CosineWithWarmupScheduler
         self.scheduler_params = scheduler_params or {}
         self.scheduled_sampling_scheduler = scheduled_sampling_scheduler
-        self.loss_fn = loss_fn
+        self.loss_train = loss_train
+        self.loss_val = loss_val
         self.use_pushforward = use_pushforward
         self.automatic_optimization = (
             not use_pushforward
@@ -325,8 +327,9 @@ class Lightning_LodeRunner(LightningModule):
                 )
 
             # Compute loss and step optimizer.
-            loss = self.loss_fn(pred_img, img_seq[:, k + 1]).mean()
+            loss = self.loss_train(pred_img, img_seq[:, k + 1]).mean()
             self.manual_backward(loss)
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
             opt.step()
 
             # Store the prediction
@@ -359,7 +362,7 @@ class Lightning_LodeRunner(LightningModule):
                 in_vars=self.in_vars_val,
                 out_vars=self.out_vars_val,
             )
-            loss_nts.append(self.loss_fn(pred_img, img_seq[:, k + 1]).mean().item())
+            loss_nts.append(self.loss_val(pred_img, img_seq[:, k + 1]).mean().item())
 
             # Autoregressive rollout:
             pred_img_rollout = self(
@@ -369,7 +372,7 @@ class Lightning_LodeRunner(LightningModule):
                 out_vars=self.out_vars_val,
             )
             loss_rollout.append(
-                self.loss_fn(pred_img_rollout, img_seq[:, k + 1]).mean().item()
+                self.loss_val(pred_img_rollout, img_seq[:, k + 1]).mean().item()
             )
 
         # Log losses.
