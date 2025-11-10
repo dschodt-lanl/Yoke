@@ -55,11 +55,102 @@ parser = cli.add_training_args(parser=parser)
 parser = cli.add_cosine_lr_scheduler_args(parser=parser)
 parser = cli.add_scheduled_sampling_args(parser=parser)
 parser.add_argument(
+    "--cache_dir",
+    action="store",
+    type=str,
+    default=None,
+    help="Path to .h5 caches for lsc sequential dataset.",
+)
+parser.add_argument(
+    "--cache_file_train",
+    action="store",
+    type=str,
+    default=None,
+    help="h5 cache file for lsc sequential training dataset.",
+)
+parser.add_argument(
+    "--cache_file_val",
+    action="store",
+    type=str,
+    default=None,
+    help="h5 cache file for lsc sequential validation dataset.",
+)
+parser.add_argument(
+    "--channel_data_dir",
+    action="store",
+    type=str,
+    default=None,
+    help="Path to files containing channel names and normalizations.",
+)
+parser.add_argument(
+    "--channel_file",
+    action="store",
+    type=str,
+    default=None,
+    help="File defining channels and normalizations.",
+)
+parser.add_argument(
+    "--precision",
+    action="store",
+    type=str,
+    default="32-true",
+    help="Training precision passed to Lightning Trainer.",
+)
+parser.add_argument(
+    "--dtype",
+    action="store",
+    type=str,
+    default="float32",
+    help="Torch datatype for loaded data.",
+)
+parser.add_argument(
+    "--loss",
+    action="store",
+    type=str,
+    default="MSELoss",
+    help="Name of loss in torch.nn to use for training.",
+)
+parser.add_argument(
+    "--n_channels_train",
+    action="store",
+    type=int,
+    default=8,
+    help="Number of channels for model to be trained on.",
+)
+parser.add_argument(
+    "--n_channels_val",
+    action="store",
+    type=int,
+    default=8,
+    help="Number of channels for model to be validated on.",
+)
+parser.add_argument(
+    "--eval_on_same_channels",
+    action="store",
+    type=int,
+    default=1,
+    help="Evaluate on same channels as used to train. Using 0==False, 1==True due to argparse quirks.",
+)
+parser.add_argument(
+    "--model",
+    action="store",
+    type=str,
+    default="cnn",
+    help="Model type: (cnn, vit)",
+)
+parser.add_argument(
     "--n_downsample",
     action="store",
     type=int,
     default=0,
     help="Number of downsampling stages when args.model=='cnn'",
+)
+parser.add_argument(
+    "--gradient_clip_val",
+    action="store",
+    type=float,
+    default=1.0,
+    help="Gradient clipping value to clip absolute value of gradients.",
 )
 
 # Change some default filepaths.
@@ -112,7 +203,6 @@ if __name__ == "__main__":
     if args.model.lower() == "cnn":
         model = LodeRunnerCNN(
             default_vars=hydro_fields,
-            image_size=image_size,
             embed_dim=args.embed_dim,
             n_downsample=args.n_downsample,  # int(np.log2(args.scale_factor / 0.25)),
         )
@@ -172,7 +262,6 @@ if __name__ == "__main__":
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "prefetch_factor": args.prefetch_factor,
-        "pin_memory": True,
     }
     lsc_datamodule = LSCDataModule(
         ds_name="LSC_rho2rho_sequential_DataSet",
@@ -187,9 +276,17 @@ if __name__ == "__main__":
             "path_to_cache": os.path.join(args.cache_dir, args.cache_file_val),
         },
         dl_params_train=dl_params
-        | {"shuffle": True, "persistent_workers": persistent_workers_train},
+        | {
+            "shuffle": True,
+            "persistent_workers": persistent_workers_train,
+            "pin_memory": persistent_workers_train,  # intentionally same as persisent workers
+        },
         dl_params_val=dl_params
-        | {"shuffle": False, "persistent_workers": persistent_workers_val},
+        | {
+            "shuffle": False,
+            "persistent_workers": persistent_workers_val,
+            "pin_memory": persistent_workers_val,
+        },
     )
 
     # Define a datamodule callback for scheduled sampling.
@@ -324,6 +421,7 @@ if __name__ == "__main__":
             minimum_schedule_prob=args.minimum_schedule_prob,
         ),
         "use_pushforward": bool(args.use_pushforward),
+        "gradient_clip_val": args.gradient_clip_val,
     }
     valid_checkpoint = (args.checkpoint is not None) and (
         args.checkpoint not in ("", "nan")
@@ -385,6 +483,7 @@ if __name__ == "__main__":
         check_val_every_n_epoch=args.TRAIN_PER_VAL,
         limit_val_batches=args.val_batches,
         reload_dataloaders_every_n_epochs=reload_dataloaders_every_n_epochs,
+        gradient_clip_val=None if args.use_pushforward else args.gradient_clip_val,
         accelerator="gpu",
         devices=args.Ngpus,  # Number of GPUs per node
         num_nodes=args.Knodes,

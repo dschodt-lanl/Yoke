@@ -140,41 +140,6 @@ def add_filepath_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
         default="lsc240420_test_sample.txt",
         help="Path to list of files to test on.",
     )
-    parser.add_argument(
-        "--cache_dir",
-        action="store",
-        type=str,
-        default=None,
-        help="Path to .h5 caches for lsc sequential dataset.",
-    )
-    parser.add_argument(
-        "--cache_file_train",
-        action="store",
-        type=str,
-        default=None,
-        help="h5 cache file for lsc sequential training dataset.",
-    )
-    parser.add_argument(
-        "--cache_file_val",
-        action="store",
-        type=str,
-        default=None,
-        help="h5 cache file for lsc sequential validation dataset.",
-    )
-    parser.add_argument(
-        "--channel_data_dir",
-        action="store",
-        type=str,
-        default=None,
-        help="Path to files containing channel names and normalizations.",
-    )
-    parser.add_argument(
-        "--channel_file",
-        action="store",
-        type=str,
-        default=None,
-        help="File defining channels and normalizations.",
-    )
 
     return parser
 
@@ -226,13 +191,6 @@ def add_model_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         type=int,
         default=256,
         help="Number of features scalar inputs are mapped into prior to T-convs.",
-    )
-    parser.add_argument(
-        "--model",
-        action="store",
-        type=str,
-        default="cnn",
-        help="Model type: (cnn, vit)",
     )
     parser.add_argument(
         "--block_structure",
@@ -405,48 +363,6 @@ def add_training_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParse
         nargs="+",
         default=(1120, 400),
         help="Rescaled image will be padded or cropped to this size.",
-    )
-    parser.add_argument(
-        "--precision",
-        action="store",
-        type=str,
-        default="32-true",
-        help="Training precision passed to Lightning Trainer.",
-    )
-    parser.add_argument(
-        "--dtype",
-        action="store",
-        type=str,
-        default="float32",
-        help="Torch datatype for loaded data.",
-    )
-    parser.add_argument(
-        "--loss",
-        action="store",
-        type=str,
-        default="MSELoss",
-        help="Name of loss in torch.nn to use for training.",
-    )
-    parser.add_argument(
-        "--n_channels_train",
-        action="store",
-        type=int,
-        default=8,
-        help="Number of channels for model to be trained on.",
-    )
-    parser.add_argument(
-        "--n_channels_val",
-        action="store",
-        type=int,
-        default=8,
-        help="Number of channels for model to be validated on.",
-    )
-    parser.add_argument(
-        "--eval_on_same_channels",
-        action="store",
-        type=int,
-        default=1,
-        help="Evaluate on same channels as used to train. Using 0==False, 1==True due to argparse quirks.",
     )
 
     return parser
