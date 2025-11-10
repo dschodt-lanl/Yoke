@@ -223,6 +223,7 @@ class Lightning_LodeRunner(LightningModule):
             frame of the predicted sequence.  I.e., if we use rollout prediction to
             predict t -> t+1, t+2, t+3, only prediction t+3 will be used in the loss
             computation.
+        gradient_clip_val (float): Value used to clip absolute value of gradients.
     """
 
     def __init__(
@@ -238,6 +239,7 @@ class Lightning_LodeRunner(LightningModule):
         loss_val: Callable = nn.MSELoss(reduction="none"),
         scheduled_sampling_scheduler: Callable = lambda global_step: 1.0,
         use_pushforward: bool = False,
+        gradient_clip_val: float = 1.0,
     ) -> None:
         """Initialization for Lightning wrapper."""
         super().__init__()
@@ -248,6 +250,7 @@ class Lightning_LodeRunner(LightningModule):
         self.loss_train = loss_train
         self.loss_val = loss_val
         self.use_pushforward = use_pushforward
+        self.gradient_clip_val = gradient_clip_val
         self.automatic_optimization = (
             not use_pushforward
         )  # custom training logic used when use_pushforward is True
@@ -329,7 +332,9 @@ class Lightning_LodeRunner(LightningModule):
             # Compute loss and step optimizer.
             loss = self.loss_train(pred_img, img_seq[:, k + 1]).mean()
             self.manual_backward(loss)
-            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(
+                self.parameters(), max_norm=self.gradient_clip_val
+            )
             opt.step()
 
             # Store the prediction

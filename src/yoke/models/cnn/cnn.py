@@ -82,7 +82,6 @@ class LodeRunnerCNN(torch.nn.Module):
     def __init__(
         self,
         default_vars: list[str],
-        image_size: Iterable[int, int] = (1120, 800),
         n_downsample: int = 0,
         embed_dim: int = 128,
         *args: tuple[Any, ...],
@@ -93,13 +92,11 @@ class LodeRunnerCNN(torch.nn.Module):
 
         self.default_vars = default_vars
         self.max_vars = len(self.default_vars)
-        self.image_size = image_size
         self.embed_dim = embed_dim
 
         # Define learnable variable channel embedding.
         self.parallel_embed = ParallelVarEmbed(
             max_vars=self.max_vars,
-            img_size=self.image_size,
             embed_dim=self.embed_dim,
             norm_layer=None,
         )

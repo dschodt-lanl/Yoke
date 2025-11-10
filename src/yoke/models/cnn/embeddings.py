@@ -22,7 +22,6 @@ class ParallelVarEmbed(torch.nn.Module):
     def __init__(
         self,
         max_vars: int = 8,
-        img_size: tuple[int, int] = (128, 128),
         embed_dim: int = 64,
         norm_layer: Optional[torch.nn.Module] = None,
     ) -> None:
@@ -30,7 +29,6 @@ class ParallelVarEmbed(torch.nn.Module):
         super().__init__()
 
         self.max_vars = max_vars
-        self.img_size = img_size
         self.embed_dim = embed_dim
 
         # Prepare parameters for variable embeddings.
