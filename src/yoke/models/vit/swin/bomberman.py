@@ -16,7 +16,6 @@ import torch
 from torch import nn
 from torch.optim.lr_scheduler import _LRScheduler
 from lightning.pytorch import LightningModule
-import torchvision
 
 from yoke.models.vit.swin.unet import SwinUnetBackbone
 from yoke.models.vit.patch_embed import ParallelVarPatchEmbed
@@ -294,7 +293,6 @@ class Lightning_LodeRunner(LightningModule):
         # scheduled sampling.
         img_seq, lead_times = batch
         scheduled_prob = self.scheduled_sampling_scheduler(self.current_epoch)
-        scheduled_prob = self.scheduled_sampling_scheduler(self.current_epoch)
         opt = self.optimizers()
         scheduler = self.lr_schedulers()
         loss_all = []
@@ -346,8 +344,21 @@ class Lightning_LodeRunner(LightningModule):
         # Log to training logger.
         batch_loss = np.mean(loss_all)
         if hasattr(self, "trainer") and self.trainer.training:
-            self.log("train_loss", batch_loss, sync_dist=True, prog_bar=True)
-            self.log("scheduled_prob", scheduled_prob, sync_dist=True)
+            self.log(
+                "train_loss",
+                batch_loss,
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+                prog_bar=True,
+            )
+            self.log(
+                "scheduled_prob",
+                scheduled_prob,
+                on_step=True,
+                on_epoch=True,
+                sync_dist=True,
+            )
 
         if self.automatic_optimization:
             return batch_loss
@@ -388,18 +399,24 @@ class Lightning_LodeRunner(LightningModule):
             self.log(
                 "val_loss",
                 loss_nts,
+                on_step=True,
+                on_epoch=True,
                 sync_dist=True,
                 prog_bar=True,
             )
             self.log(
                 "val_loss_rollout",
                 loss_rollout,
+                on_step=True,
+                on_epoch=True,
                 sync_dist=True,
                 prog_bar=True,
             )
             self.log(
                 "val_loss_rollout_final",
                 loss_rollout_final,
+                on_step=True,
+                on_epoch=True,
                 sync_dist=True,
                 prog_bar=True,
             )
