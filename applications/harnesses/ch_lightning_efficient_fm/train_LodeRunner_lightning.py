@@ -111,6 +111,13 @@ parser.add_argument(
     help="Name of loss in torch.nn to use for training.",
 )
 parser.add_argument(
+    "--reload_dataloaders_every_n_epochs",
+    action="store",
+    type=int,
+    default=None,
+    help="Number of epochs between dataloader reloads.",
+)
+parser.add_argument(
     "--n_channels_train",
     action="store",
     type=int,
@@ -130,6 +137,13 @@ parser.add_argument(
     type=int,
     default=1,
     help="Evaluate on same channels as used to train. Using 0==False, 1==True due to argparse quirks.",
+)
+parser.add_argument(
+    "--normalize",
+    action="store",
+    type=int,
+    default=1,
+    help="Z-score normalize training pairs. Using 0==False, 1==True due to argparse quirks.",
 )
 parser.add_argument(
     "--model",
@@ -227,7 +241,9 @@ if __name__ == "__main__":
     # Define some arg-dependent flags and parameters.
     persistent_workers_train = args.n_channels_train == len(hydro_fields)
     persistent_workers_val = args.n_channels_val == len(hydro_fields)
-    if args.n_channels_train < len(hydro_fields):
+    if args.reload_dataloaders_every_n_epochs is not None:
+        reload_dataloaders_every_n_epochs = args.reload_dataloaders_every_n_epochs
+    elif args.n_channels_train < len(hydro_fields):
         reload_dataloaders_every_n_epochs = 1
     elif args.n_channels_val < len(hydro_fields):
         reload_dataloaders_every_n_epochs = args.TRAIN_PER_VAL
@@ -235,8 +251,12 @@ if __name__ == "__main__":
         reload_dataloaders_every_n_epochs = 0
 
     # Prepare datasets and datamodule.
-    means = list(ch_file["mean"])
-    scales = list(ch_file["scale"])
+    if args.normalize:
+        means = list(ch_file["mean"])
+        scales = list(ch_file["scale"])
+    else:
+        means = list(ch_file["mean"] * 0)
+        scales = list(ch_file["scale"] / ch_file["scale"])
     transform = torch.nn.Sequential(
         ResizePadCrop(
             interp_kwargs={"scale_factor": args.scale_factor},
@@ -248,6 +268,7 @@ if __name__ == "__main__":
             std=scales,
         ),
     )
+
     dtype = getattr(torch, args.dtype)
     ds_params = {
         "LSC_NPZ_DIR": args.LSC_NPZ_DIR,
@@ -279,13 +300,13 @@ if __name__ == "__main__":
         | {
             "shuffle": True,
             "persistent_workers": persistent_workers_train,
-            "pin_memory": persistent_workers_train,  # intentionally same as persisent workers
+            "pin_memory": ~persistent_workers_train,
         },
         dl_params_val=dl_params
         | {
             "shuffle": False,
             "persistent_workers": persistent_workers_val,
-            "pin_memory": persistent_workers_val,
+            "pin_memory": ~persistent_workers_val,
         },
     )
 
@@ -307,15 +328,19 @@ if __name__ == "__main__":
             self.scales = scales
             self.eval_on_same_channels = eval_on_same_channels
 
-        def on_train_epoch_end(self, trainer, model):
+        def on_train_epoch_start(self, trainer, model):
             if self.n_channels_train < len(self.hydro_fields):
-                h_fields_inds = torch.tensor(
-                    np.random.choice(
-                        np.arange(len(self.hydro_fields)),
-                        size=self.n_channels_train,
-                        replace=False,
+                if trainer.is_global_zero:
+                    h_fields_inds = torch.randperm(
+                        len(self.hydro_fields), device=model.device
+                    )[: self.n_channels_train].sort()[0]
+                else:
+                    h_fields_inds = torch.empty(
+                        self.n_channels_train,
+                        dtype=torch.int64,
+                        device=model.device,
                     )
-                ).sort()[0]
+                h_fields_inds = trainer.strategy.broadcast(h_fields_inds)
             else:
                 h_fields_inds = torch.arange(len(self.hydro_fields))
             model.in_vars_train.copy_(h_fields_inds)
@@ -336,18 +361,22 @@ if __name__ == "__main__":
                 trainer.datamodule.ds_params_train["hydro_fields"] = h_fields_sample
                 trainer.datamodule.ds_params_train["transform"] = transform
 
-        def on_validation_epoch_end(self, trainer, model):
+        def on_validation_epoch_start(self, trainer, model):
             if self.eval_on_same_channels:
                 # Validation should be done on same channel subset as training.
                 h_fields_inds = model.in_vars_train.clone()
             elif self.n_channels_val < len(self.hydro_fields):
-                h_fields_inds = torch.tensor(
-                    np.random.choice(
-                        np.arange(len(self.hydro_fields)),
-                        size=self.n_channels_val,
-                        replace=False,
+                if trainer.is_global_zero:
+                    h_fields_inds = torch.randperm(
+                        len(self.hydro_fields), device=model.device
+                    )[: self.n_channels_val].sort()[0]
+                else:
+                    h_fields_inds = torch.empty(
+                        self.n_channels_val,
+                        dtype=torch.int64,
+                        device=model.device,
                     )
-                ).sort()[0]
+                h_fields_inds = trainer.strategy.broadcast(h_fields_inds)
             else:
                 h_fields_inds = torch.arange(len(self.hydro_fields))
             model.in_vars_val.copy_(h_fields_inds)
@@ -369,8 +398,8 @@ if __name__ == "__main__":
                 trainer.datamodule.ds_params_val["transform"] = transform
 
         def on_fit_start(self, trainer, model):
-            self.on_train_epoch_end(trainer=trainer, model=model)
-            self.on_validation_epoch_end(trainer=trainer, model=model)
+            self.on_train_epoch_start(trainer=trainer, model=model)
+            self.on_validation_epoch_start(trainer=trainer, model=model)
 
     ch_subsampling_schedule = Scheduler(
         hydro_fields=hydro_fields,
@@ -398,6 +427,15 @@ if __name__ == "__main__":
             min(valid_im_size[1], args.scaled_image_size[1]),
         ),  # corresponds to pad_position=("bottom", "right") in ResizePadCrop
     )
+    loss_val = CroppedLoss2D(
+        loss_fxn=nn.MSELoss(reduction="none"),  # for now, always use MSE for validation
+        crop=(
+            0,
+            0,
+            min(valid_im_size[0], args.scaled_image_size[0]),
+            min(valid_im_size[1], args.scaled_image_size[1]),
+        ),  # corresponds to pad_position=("bottom", "right") in ResizePadCrop
+    )
 
     # Prepare the Lightning module.
     lm_kwargs = {
@@ -407,6 +445,7 @@ if __name__ == "__main__":
         "in_vars_val": torch.arange(args.n_channels_val),
         "out_vars_val": torch.arange(args.n_channels_val),
         "loss_train": loss,
+        "loss_val": loss_val,
         "lr_scheduler": CosineWithWarmupScheduler,
         "scheduler_params": {
             "warmup_steps": args.warmup_steps,
@@ -464,16 +503,16 @@ if __name__ == "__main__":
 
     # Prepare trainer.
     checkpoint_callback = ModelCheckpoint(
-        save_top_k=10,
+        save_top_k=-1,
         every_n_epochs=args.TRAIN_PER_VAL,
         monitor="val_loss",
         mode="min",
         dirpath="./checkpoints",
-        filename=f"study{args.studyIDX:03d}" + "_{epoch:04d}_{val_loss:.4f}",
+        filename=f"study{args.studyIDX:03d}" + "_{epoch:04d}_{val_loss:.6f}",
         save_last=True,
     )
     checkpoint_callback.CHECKPOINT_NAME_LAST = (
-        f"study{args.studyIDX:03d}" + "_{epoch:04d}_{val_loss:.4f}-last"
+        f"study{args.studyIDX:03d}" + "_{epoch:04d}_{val_loss:.6f}-last"
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
     final_epoch = min(starting_epoch + args.cycle_epochs, args.total_epochs) - 1
@@ -492,9 +531,9 @@ if __name__ == "__main__":
         enable_progress_bar=True,
         logger=logger,
         log_every_n_steps=min(
-            1024,
+            128,
             args.train_batches,
-        ),  # arbitrary choice of 1024 minimum
+        ),
         callbacks=[ch_subsampling_schedule, checkpoint_callback, lr_monitor],
     )
 
